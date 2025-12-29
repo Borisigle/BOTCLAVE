@@ -21,7 +21,25 @@ from .footprint import (
     KlineDataPoint,
 )
 from .dom_builder import DOMBuilder
-from .indicators import OrderFlowIndicators
+from .indicators import (
+    OrderFlowIndicators,
+    SMCIndicator,
+    SwingDetector,
+    BreakOfStructureDetector,
+    FairValueGapDetector,
+    ChangeOfCharacterDetector,
+    OrderBlockDetector,
+    LiquidityDetector,
+    Swing,
+    BreakOfStructure,
+    FairValueGap,
+    ChangeOfCharacter,
+    OrderBlock,
+    LiquidityCluster,
+    RetracementLevels,
+    calculate_retracement_levels,
+    get_previous_highs_lows,
+)
 from .strategy import OrderFlowStrategy
 
 __all__ = [
@@ -42,4 +60,23 @@ __all__ = [
     "DOMBuilder",
     "OrderFlowIndicators",
     "OrderFlowStrategy",
+    # SMC Indicators
+    "SMCIndicator",
+    "SwingDetector",
+    "BreakOfStructureDetector",
+    "FairValueGapDetector",
+    "ChangeOfCharacterDetector",
+    "OrderBlockDetector",
+    "LiquidityDetector",
+    # SMC Data classes
+    "Swing",
+    "BreakOfStructure",
+    "FairValueGap",
+    "ChangeOfCharacter",
+    "OrderBlock",
+    "LiquidityCluster",
+    "RetracementLevels",
+    # SMC Helper functions
+    "calculate_retracement_levels",
+    "get_previous_highs_lows",
 ]
