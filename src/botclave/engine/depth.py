@@ -3,12 +3,213 @@ Depth Analysis Module
 
 Analyzes order book depth to identify areas of absorption, imbalances,
 and liquidity concentration.
+
+This module provides foundational order book management classes ported
+from flowsurface (Rust) for real-time order book maintenance.
 """
 
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 from pydantic import BaseModel, Field
+
+
+@dataclass
+class DeOrder:
+    """Represents an order in the order book.
+
+    Attributes:
+        price: Price level of the order
+        qty: Quantity/volume at this price level
+    """
+
+    price: float
+    qty: float
+
+
+class Depth:
+    """Maintains the order book (bids + asks) with real-time updates.
+
+    This class provides efficient order book management similar to flowsurface's
+    depth implementation, allowing for both full snapshots and incremental updates.
+
+    Example:
+        >>> depth = Depth()
+        >>> depth.update([(100.0, 10.0), (99.5, 5.0)], [(101.0, 8.0)])
+        >>> depth.mid_price()
+        100.5
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty order book."""
+        self.bids: Dict[float, float] = {}  # {price: qty}
+        self.asks: Dict[float, float] = {}  # {price: qty}
+
+    def update(
+        self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]]
+    ) -> None:
+        """Update bids/asks with new values.
+
+        If qty=0, removes the price level. If qty>0, updates or inserts.
+
+        Args:
+            bids: List of (price, qty) tuples for bid levels
+            asks: List of (price, qty) tuples for ask levels
+        """
+        # Update bids
+        for price, qty in bids:
+            if qty == 0:
+                # Remove level if qty is 0
+                self.bids.pop(price, None)
+            else:
+                # Update or insert level
+                self.bids[price] = qty
+
+        # Update asks
+        for price, qty in asks:
+            if qty == 0:
+                # Remove level if qty is 0
+                self.asks.pop(price, None)
+            else:
+                # Update or insert level
+                self.asks[price] = qty
+
+    def snapshot(
+        self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]]
+    ) -> None:
+        """Replace the entire order book with a snapshot.
+
+        Args:
+            bids: List of (price, qty) tuples for bid levels
+            asks: List of (price, qty) tuples for ask levels
+        """
+        self.bids.clear()
+        self.asks.clear()
+        self.update(bids, asks)
+
+    def mid_price(self) -> Optional[float]:
+        """Calculate the mid price (best_bid + best_ask) / 2.
+
+        Returns:
+            Mid price or None if book is empty
+        """
+        best_bid = self.best_bid()
+        best_ask = self.best_ask()
+
+        if best_bid is None or best_ask is None:
+            return None
+
+        return (best_bid[0] + best_ask[0]) / 2.0
+
+    def best_bid(self) -> Optional[Tuple[float, float]]:
+        """Get the best bid (highest price).
+
+        Returns:
+            Tuple of (price, qty) for best bid or None if no bids
+        """
+        if not self.bids:
+            return None
+
+        best_price = max(self.bids.keys())
+        return (best_price, self.bids[best_price])
+
+    def best_ask(self) -> Optional[Tuple[float, float]]:
+        """Get the best ask (lowest price).
+
+        Returns:
+            Tuple of (price, qty) for best ask or None if no asks
+        """
+        if not self.asks:
+            return None
+
+        best_price = min(self.asks.keys())
+        return (best_price, self.asks[best_price])
+
+    def get_level(
+        self, price: float, side: str = "both"
+    ) -> Optional[Tuple[float, float, float]]:
+        """Get bid_qty, ask_qty, mid_price at a specific price level.
+
+        Args:
+            price: Price level to query
+            side: 'bid', 'ask', or 'both' to specify which side to query
+
+        Returns:
+            Tuple of (bid_qty, ask_qty, mid_price) or None if no data
+        """
+        bid_qty = self.bids.get(price, 0.0)
+        ask_qty = self.asks.get(price, 0.0)
+        mid_price = self.mid_price()
+
+        if side == "bid" and bid_qty == 0:
+            return None
+        if side == "ask" and ask_qty == 0:
+            return None
+        if side == "both" and bid_qty == 0 and ask_qty == 0:
+            return None
+
+        return (bid_qty, ask_qty, mid_price if mid_price else 0.0)
+
+
+class LocalDepthCache:
+    """Maintains a cached, updated depth object from WebSocket updates.
+
+    This class manages order book synchronization similar to flowsurface's
+    LocalDepthCache, handling both initial snapshots and incremental diff updates.
+
+    Example:
+        >>> cache = LocalDepthCache()
+        >>> cache.update_snapshot([(100.0, 10.0)], [(101.0, 8.0)], 1, 1000)
+        >>> cache.update_diff([(100.5, 5.0)], [], 2, 1001)
+        >>> depth = cache.get_depth()
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty depth cache."""
+        self.depth = Depth()
+        self.last_update_id = 0
+        self.time_ms = 0
+
+    def update_snapshot(
+        self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]],
+        update_id: int, time_ms: int
+    ) -> None:
+        """Receive a complete snapshot (full reset of order book).
+
+        Args:
+            bids: List of (price, qty) tuples for bid levels
+            asks: List of (price, qty) tuples for ask levels
+            update_id: Update sequence ID
+            time_ms: Timestamp in milliseconds
+        """
+        self.depth.snapshot(bids, asks)
+        self.last_update_id = update_id
+        self.time_ms = time_ms
+
+    def update_diff(
+        self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]],
+        update_id: int, time_ms: int
+    ) -> None:
+        """Receive incremental diff updates to the order book.
+
+        Args:
+            bids: List of (price, qty) tuples for bid level changes
+            asks: List of (price, qty) tuples for ask level changes
+            update_id: Update sequence ID
+            time_ms: Timestamp in milliseconds
+        """
+        self.depth.update(bids, asks)
+        self.last_update_id = update_id
+        self.time_ms = time_ms
+
+    def get_depth(self) -> Depth:
+        """Get the current Depth object.
+
+        Returns:
+            Current Depth object with latest order book state
+        """
+        return self.depth
 
 
 class DepthLevel(BaseModel):
