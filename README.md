@@ -46,7 +46,8 @@
 | LocalDepthCache (depth.py) | ✅ | COMPLETED | Port de flowsurface completo |
 | KlineFootprint (footprint.py) | ✅ | COMPLETED | Port de flowsurface completo |
 | DOM Builder (dom_builder.py) | ✅ | 2/2 | Depth of Market builder |
-| Indicators (indicators.py) | ✅ | 3/3 | Order flow indicators |
+| Indicators (indicators.py) | ✅ | COMPLETED | Order flow + SMC indicators |
+| SMC Indicators (indicators.py) | ✅ | COMPLETED | Swings, BOS, FFG, OB, CHoCH, Liquidity |
 | Strategy (strategy.py) | ✅ | 3/3 | Trading strategy logic |
 
 ### Exchange & Infrastructure
@@ -78,6 +79,7 @@ pip install -e .
 
 ```python
 from botclave.engine.strategy import OrderFlowStrategy, StrategyConfig
+from botclave.engine.indicators import SMCIndicator
 from botclave.exchange.binance_connector import BinanceConnector
 import pandas as pd
 
@@ -101,6 +103,25 @@ if signal:
     print(f"Signal: {signal.side} at {signal.entry_price}")
     print(f"Stop Loss: {signal.stop_loss}")
     print(f"Take Profit: {signal.take_profit}")
+
+# Use SMC indicators for market analysis
+smc = SMCIndicator(left_bars=2, right_bars=2)
+analysis = smc.analyze(df)
+
+print(f"Market Bias: {smc.get_bias(df)}")
+print(f"Swings detected: {len(analysis['swings'])}")
+print(f"Active Fair Value Gaps: {len(analysis['active_ffg'])}")
+print(f"Order Blocks: {len(analysis['order_blocks'])}")
+
+# Get trade levels
+entry = smc.get_entry_level(df, 'long')
+stop_loss = smc.get_stop_loss(df, 'long')
+take_profits = smc.get_take_profit_levels(df, 'long', count=3)
+
+if entry:
+    print(f"\nLong Entry: {entry}")
+    print(f"Stop Loss: {stop_loss}")
+    print(f"Take Profits: {take_profits}")
 ```
 
 ### Running the Dashboard
@@ -234,13 +255,23 @@ pytest tests/ --cov=botclave --cov-report=html
 
 ## 📊 Key Indicators
 
-The bot uses several proprietary indicators for order flow analysis:
+The bot uses several proprietary indicators for order flow and smart money analysis:
 
+### Order Flow Indicators
 1. **Cumulative Volume Delta (CVD)** - Tracks buying vs selling pressure
 2. **Order Book Imbalance** - Identifies bid/ask imbalances
 3. **Absorption Zones** - Detects areas where large orders are absorbed
 4. **Volume Profile** - Shows volume distribution across price levels
 5. **Footprint Patterns** - Identifies specific order flow patterns
+
+### SMC (Smart Money Concepts) Indicators
+1. **Swing Highs/Lows** - Structural pivots for market structure analysis
+2. **Break of Structure (BOS)** - Identifies structural changes in market direction
+3. **Fair Value Gaps (FFG)** - Detects price imbalances and potential retracement zones
+4. **Change of Character (CHoCH)** - Signals trend reversals
+5. **Order Blocks** - Identifies institutional order absorption zones
+6. **Liquidity Clusters** - Detects key support/resistance levels
+7. **Fibonacci Retracements** - Calculates retracement levels for entries/exits
 
 ## 🎯 Trading Strategy
 
