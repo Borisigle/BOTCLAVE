@@ -40,9 +40,18 @@
 
 ## 📊 Implementation Status
 
+### Core Engine Modules
 | Module | Status | Progress | Description |
 |--------|--------|----------|-------------|
-| Engine | ✅ | 5/5 | Core order flow analysis components |
+| LocalDepthCache (depth.py) | ✅ | COMPLETED | Port de flowsurface completo |
+| KlineFootprint (footprint.py) | ✅ | COMPLETED | Port de flowsurface completo |
+| DOM Builder (dom_builder.py) | ✅ | 2/2 | Depth of Market builder |
+| Indicators (indicators.py) | ✅ | 3/3 | Order flow indicators |
+| Strategy (strategy.py) | ✅ | 3/3 | Trading strategy logic |
+
+### Exchange & Infrastructure
+| Module | Status | Progress | Description |
+|--------|--------|----------|-------------|
 | Exchange | ✅ | 2/2 | Exchange connectivity and order management |
 | Backtest | ✅ | 2/2 | Backtesting and strategy validation |
 | Dashboard | ✅ | 3/3 | Streamlit visualization dashboard |
