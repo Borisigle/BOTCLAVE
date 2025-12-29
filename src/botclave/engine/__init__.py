@@ -40,7 +40,13 @@ from .indicators import (
     calculate_retracement_levels,
     get_previous_highs_lows,
 )
-from .strategy import OrderFlowStrategy
+from .strategy import (
+    TradingStrategy,
+    RiskRewardSetup,
+    Signal,
+    OrderflowAnalyzer,
+    MultiTimeframeStrategy,
+)
 
 __all__ = [
     # Foundational depth classes (from flowsurface port)
@@ -59,7 +65,11 @@ __all__ = [
     "FootprintChart",
     "DOMBuilder",
     "OrderFlowIndicators",
-    "OrderFlowStrategy",
+    "TradingStrategy",
+    "RiskRewardSetup",
+    "Signal",
+    "OrderflowAnalyzer",
+    "MultiTimeframeStrategy",
     # SMC Indicators
     "SMCIndicator",
     "SwingDetector",

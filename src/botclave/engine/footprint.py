@@ -264,6 +264,28 @@ class KlineFootprint:
         self.trades.clear()
         self.poc = None
 
+    def get_price_levels(self) -> List[float]:
+        """Get all price levels in the footprint.
+
+        Returns:
+            List of price levels where trades occurred
+        """
+        return list(self.trades.keys())
+
+    def get_delta_percentage(self, price: float) -> float:
+        """Get delta percentage at a specific price level.
+
+        Args:
+            price: Price level to check
+
+        Returns:
+            Delta percentage (0-1) or 0.0 if price not found
+        """
+        if price not in self.trades:
+            return 0.0
+        
+        return self.trades[price].delta_percent
+
     def get_stats(self) -> Dict:
         """Get footprint statistics.
 

@@ -48,7 +48,7 @@
 | DOM Builder (dom_builder.py) | ✅ | 2/2 | Depth of Market builder |
 | Indicators (indicators.py) | ✅ | COMPLETED | Order flow + SMC indicators |
 | SMC Indicators (indicators.py) | ✅ | COMPLETED | Swings, BOS, FFG, OB, CHoCH, Liquidity |
-| Strategy (strategy.py) | ✅ | 3/3 | Trading strategy logic |
+| Strategy Logic (strategy.py) | ✅ | COMPLETED | SMC+Orderflow confluence, RR validation |
 
 ### Exchange & Infrastructure
 | Module | Status | Progress | Description |

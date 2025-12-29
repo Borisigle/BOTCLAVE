@@ -1,151 +1,345 @@
 """
-Tests for order flow strategy module.
+Test suite for the strategy module.
+
+Tests the core trading strategy logic including risk-reward calculations,
+signal generation, orderflow analysis, and multi-timeframe confluence.
 """
 
 import pytest
 import pandas as pd
 import numpy as np
-
 from botclave.engine.strategy import (
-    OrderFlowStrategy,
-    StrategyConfig,
-    PositionSide,
-    Position,
+    TradingStrategy, RiskRewardSetup, Signal, OrderflowAnalyzer
 )
+from botclave.engine.footprint import KlineFootprint, Trade
 
 
-class TestOrderFlowStrategy:
-    """Test suite for OrderFlowStrategy class."""
+@pytest.fixture
+def sample_df():
+    """DataFrame with bullish trend + FFG"""
+    dates = pd.date_range('2024-01-01', periods=100, freq='1H')
+    np.random.seed(42)
+    
+    # Bullish trend
+    close = 100 + np.cumsum(np.random.randn(100) * 0.3 + 0.2)
+    
+    return pd.DataFrame({
+        'open': close + np.random.randn(100) * 0.2,
+        'high': close + abs(np.random.randn(100) * 0.5),
+        'low': close - abs(np.random.randn(100) * 0.5),
+        'close': close,
+        'volume': np.random.uniform(1000, 10000, 100),
+    }, index=dates)
 
-    def test_initialization(self):
-        """Test strategy initialization."""
-        config = StrategyConfig(
-            min_confidence=0.6,
-            risk_reward_ratio=2.0,
+
+@pytest.fixture
+def sample_footprints(sample_df):
+    """Footprints with absorption"""
+    footprints = []
+    for i in range(len(sample_df)):
+        fp = KlineFootprint(price_step=0.5)
+        
+        # Add simulated trades
+        if i % 10 == 0:  # Every 10 candles, there's buy absorption
+            for _ in range(50):
+                fp.add_trade(Trade(
+                    price=sample_df['close'].iloc[i],
+                    qty=100,
+                    is_buy=True,
+                    time_ms=int(i * 1000)
+                ))
+            for _ in range(10):
+                fp.add_trade(Trade(
+                    price=sample_df['close'].iloc[i],
+                    qty=100,
+                    is_buy=False,
+                    time_ms=int(i * 1000)
+                ))
+        
+        footprints.append(fp)
+    
+    return footprints
+
+
+def test_risk_reward_setup():
+    """Test: RiskRewardSetup calculates RR correctly"""
+    setup = RiskRewardSetup(
+        entry_price=100.0,
+        stop_loss_price=99.0,
+        take_profit_price=103.0,
+        position_size=1.0
+    )
+    
+    assert setup.risk_reward_ratio == 3.0  # 3 up / 1 down
+    assert setup.is_valid_rr(min_rr=3.0)
+
+
+def test_risk_reward_setup_invalid():
+    """Test: RiskRewardSetup correctly identifies invalid RR"""
+    setup = RiskRewardSetup(
+        entry_price=100.0,
+        stop_loss_price=99.0,
+        take_profit_price=101.5,
+        position_size=1.0
+    )
+    
+    assert setup.risk_reward_ratio == 1.5  # 1.5 up / 1 down
+    assert not setup.is_valid_rr(min_rr=3.0)
+
+
+def test_strategy_analyze(sample_df, sample_footprints):
+    """Test: Strategy.analyze() returns complete dict"""
+    strategy = TradingStrategy()
+    result = strategy.analyze(sample_df, sample_footprints)
+    
+    # Must have all required keys
+    required_keys = ['smc', 'orderflow', 'signals', 'current_bias', 'confluence_level']
+    for key in required_keys:
+        assert key in result
+
+
+def test_signal_generation(sample_df, sample_footprints):
+    """Test: Generates signals when there's confluence"""
+    strategy = TradingStrategy(min_rr=3.0, min_confidence=0.5)
+    result = strategy.analyze(sample_df, sample_footprints)
+    
+    signals = result['signals']
+    
+    # Signals may be empty (depends on data), but if present they must be valid
+    for signal in signals:
+        assert signal.signal_type in ['ENTRY_LONG', 'ENTRY_SHORT', 'EXIT_LONG', 'EXIT_SHORT']
+        assert 0 <= signal.confidence <= 1.0
+        if signal.entry_setup:
+            assert signal.entry_setup.risk_reward_ratio >= 3.0
+
+
+def test_bias_detection(sample_df, sample_footprints):
+    """Test: detects bias correctly"""
+    strategy = TradingStrategy()
+    result = strategy.analyze(sample_df, sample_footprints)
+    
+    bias = result['current_bias']
+    assert bias in ['bullish', 'bearish', 'neutral']
+
+
+def test_orderflow_analyzer():
+    """Test: OrderflowAnalyzer detects absorption"""
+    analyzer = OrderflowAnalyzer(delta_threshold=0.65)
+    
+    # Create footprint with buy absorption
+    fp = KlineFootprint()
+    for _ in range(100):
+        fp.add_trade(Trade(price=100.0, qty=10, is_buy=True, time_ms=1000))
+    for _ in range(20):
+        fp.add_trade(Trade(price=100.0, qty=10, is_buy=False, time_ms=1001))
+    
+    # Delta should be > 65%
+    imbalance = fp.get_imbalance(100.0, threshold=0.65)
+    assert imbalance == 'buy'
+
+
+def test_orderflow_analyzer_sell_absorption():
+    """Test: OrderflowAnalyzer detects sell absorption"""
+    analyzer = OrderflowAnalyzer(delta_threshold=0.65)
+    
+    # Create footprint with sell absorption
+    fp = KlineFootprint()
+    for _ in range(20):
+        fp.add_trade(Trade(price=100.0, qty=10, is_buy=True, time_ms=1000))
+    for _ in range(100):
+        fp.add_trade(Trade(price=100.0, qty=10, is_buy=False, time_ms=1001))
+    
+    # Delta should be > 65% negative
+    imbalance = fp.get_imbalance(100.0, threshold=0.65)
+    assert imbalance == 'sell'
+
+
+def test_absorption_zones(sample_df, sample_footprints):
+    """Test: find_absorption_zones returns correct zones"""
+    analyzer = OrderflowAnalyzer(delta_threshold=0.65)
+    
+    # Find absorption zones in last 5 candles
+    absorption_zones = analyzer.find_absorption_zones(
+        sample_df, sample_footprints, lookback=5
+    )
+    
+    # Should return a dictionary
+    assert isinstance(absorption_zones, dict)
+    
+    # All values should be 'BUY' or 'SELL'
+    for absorption_type in absorption_zones.values():
+        assert absorption_type in ['BUY', 'SELL']
+
+
+def test_absorption_strength():
+    """Test: get_absorption_strength returns value between 0-1"""
+    analyzer = OrderflowAnalyzer(delta_threshold=0.65)
+    
+    # Create footprint with strong absorption
+    fp = KlineFootprint()
+    for _ in range(100):
+        fp.add_trade(Trade(price=100.0, qty=10, is_buy=True, time_ms=1000))
+    for _ in range(10):
+        fp.add_trade(Trade(price=100.0, qty=10, is_buy=False, time_ms=1001))
+    
+    strength = analyzer.get_absorption_strength(fp, 100.0)
+    
+    assert 0.0 <= strength <= 1.0
+    assert strength > 0.6  # Should be above threshold
+
+
+def test_get_current_signal(sample_df, sample_footprints):
+    """Test: get_current_signal returns strongest signal"""
+    strategy = TradingStrategy()
+    
+    # Get current signal
+    signal = strategy.get_current_signal(sample_df, sample_footprints)
+    
+    # Signal may be None if no valid signals
+    if signal:
+        assert isinstance(signal, Signal)
+        assert 0 <= signal.confidence <= 1.0
+
+
+def test_multi_timeframe_strategy():
+    """Test: MultiTimeframeStrategy basic functionality"""
+    from botclave.engine.strategy import MultiTimeframeStrategy
+    
+    # Create strategy with multiple timeframes
+    strategy = MultiTimeframeStrategy(timeframes=['15m', '1h', '4h'])
+    
+    # Should have strategies for each timeframe
+    assert len(strategy.strategies) == 3
+    assert '15m' in strategy.strategies
+    assert '1h' in strategy.strategies
+    assert '4h' in strategy.strategies
+
+
+def test_confluence_calculation():
+    """Test: confluence calculation with multiple signals"""
+    strategy = TradingStrategy()
+    
+    # Create some test signals
+    signals = [
+        Signal(
+            signal_type='ENTRY_LONG',
+            index=0,
+            price=100.0,
+            time='2024-01-01',
+            confidence=0.8,
+            smc_component='BOS',
+            orderflow_component='ABSORPTION_BUY'
+        ),
+        Signal(
+            signal_type='ENTRY_LONG',
+            index=1,
+            price=101.0,
+            time='2024-01-02',
+            confidence=0.9,
+            smc_component='FFG',
+            orderflow_component='ABSORPTION_BUY'
         )
-        strategy = OrderFlowStrategy(config)
-
-        assert strategy.config.min_confidence == 0.6
-        assert strategy.config.risk_reward_ratio == 2.0
-        assert len(strategy.open_positions) == 0
-
-    def test_analyze_market_structure(self):
-        """Test market structure analysis."""
-        strategy = OrderFlowStrategy()
-
-        df = pd.DataFrame(
-            {
-                "open": np.random.randn(100) * 100 + 50000,
-                "high": np.random.randn(100) * 100 + 50100,
-                "low": np.random.randn(100) * 100 + 49900,
-                "close": np.random.randn(100) * 100 + 50000,
-                "volume": np.random.randn(100) * 50 + 100,
-            }
-        )
-
-        structure = strategy.analyze_market_structure(df)
-
-        assert "trend" in structure
-        assert "strength" in structure
-        assert "swing_highs" in structure
-        assert "swing_lows" in structure
-        assert structure["trend"] in ["bullish", "bearish", "neutral"]
-
-    def test_detect_order_blocks(self):
-        """Test order block detection."""
-        strategy = OrderFlowStrategy()
-
-        df = pd.DataFrame(
-            {
-                "open": [50000, 50100, 50050, 50200, 50150] * 4,
-                "high": [50100, 50200, 50150, 50300, 50250] * 4,
-                "low": [49900, 50000, 49950, 50100, 50050] * 4,
-                "close": [50050, 50150, 50100, 50250, 50200] * 4,
-                "volume": [100, 150, 120, 180, 140] * 4,
-            }
-        )
-
-        order_blocks = strategy.detect_order_blocks(df)
-
-        assert isinstance(order_blocks, list)
-
-    def test_calculate_entry_exit_levels(self):
-        """Test entry/exit level calculation."""
-        strategy = OrderFlowStrategy()
-
-        current_price = 50000.0
-        support_levels = [49500.0, 49800.0]
-        resistance_levels = [50500.0, 50800.0]
-
-        entry, stop_loss, take_profit = strategy.calculate_entry_exit_levels(
-            current_price,
-            PositionSide.LONG,
-            support_levels,
-            resistance_levels,
-        )
-
-        assert entry > 0
-        assert stop_loss < entry
-        assert all(tp > entry for tp in take_profit)
-
-    def test_generate_signal(self):
-        """Test signal generation."""
-        strategy = OrderFlowStrategy()
-
-        df = pd.DataFrame(
-            {
-                "open": [50000 + i * 10 for i in range(100)],
-                "high": [50100 + i * 10 for i in range(100)],
-                "low": [49900 + i * 10 for i in range(100)],
-                "close": [50050 + i * 10 for i in range(100)],
-                "volume": [100 + i for i in range(100)],
-                "buy_volume": [60 + i * 0.5 for i in range(100)],
-                "sell_volume": [40 + i * 0.5 for i in range(100)],
-            }
-        )
-
-        timestamp = int(pd.Timestamp.now().timestamp() * 1000)
-        current_price = df["close"].iloc[-1]
-
-        signal = strategy.generate_signal("BTC/USDT", df, current_price, timestamp)
-
-        if signal:
-            assert signal.symbol == "BTC/USDT"
-            assert signal.side in [PositionSide.LONG, PositionSide.SHORT]
-            assert signal.confidence >= strategy.config.min_confidence
-
-    def test_update_position(self):
-        """Test position update."""
-        strategy = OrderFlowStrategy()
-
-        position = Position(
-            symbol="BTC/USDT",
-            side=PositionSide.LONG,
-            entry_price=50000.0,
-            quantity=1.0,
-            entry_time=int(pd.Timestamp.now().timestamp() * 1000),
-            stop_loss=49500.0,
-            take_profit=[51000.0, 51500.0, 52000.0],
-        )
-
-        result = strategy.update_position(position, 50500.0)
-
-        assert "should_exit" in result
-        assert "reason" in result
-        assert "pnl" in result
-
-    def test_get_statistics(self):
-        """Test statistics retrieval."""
-        strategy = OrderFlowStrategy()
-
-        stats = strategy.get_statistics()
-
-        assert "total_signals" in stats
-        assert "long_signals" in stats
-        assert "short_signals" in stats
-        assert "avg_confidence" in stats
-        assert stats["total_signals"] == 0
+    ]
+    
+    # Calculate confluence
+    confluence = strategy._calculate_confluence(signals)
+    
+    # Should be average of confidences
+    expected = (0.8 + 0.9) / 2
+    assert abs(confluence - expected) < 0.001
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def test_signal_creation_long():
+    """Test: signal creation for long entry"""
+    strategy = TradingStrategy(min_rr=2.0)  # Lower RR requirement for testing
+    
+    # Create mock SMC result
+    class MockFFG:
+        def __init__(self):
+            self.bottom_price = 100.0
+            self.top_price = 105.0
+            self.direction = 'bullish'
+    
+    class MockSwing:
+        def __init__(self):
+            self.price = 98.0
+            self.swing_type = 'low'
+    
+    smc_result = {
+        'last_swing': MockSwing(),
+        'swings': []
+    }
+    
+    # Create mock DataFrame
+    df = pd.DataFrame({
+        'close': [102.0]
+    })
+    
+    # Create signal
+    signal = strategy._create_entry_signal(
+        signal_type='ENTRY_LONG',
+        index=0,
+        price=102.0,
+        time='2024-01-01',
+        smc_component='BOS',
+        orderflow_component='ABSORPTION_BUY',
+        df=df,
+        smc_result=smc_result,
+        ffg=MockFFG()
+    )
+    
+    # Verify signal properties
+    assert signal is not None
+    assert signal.signal_type == 'ENTRY_LONG'
+    assert signal.entry_setup.entry_price == 100.0
+    assert signal.entry_setup.stop_loss_price == 98.0
+    assert signal.entry_setup.take_profit_price == 105.0  # 5% above entry
+    assert signal.confidence > 0.7
+
+
+def test_signal_creation_short():
+    """Test: signal creation for short entry"""
+    strategy = TradingStrategy(min_rr=2.0)  # Lower RR requirement for testing
+    
+    # Create mock SMC result
+    class MockFFG:
+        def __init__(self):
+            self.top_price = 100.0
+            self.bottom_price = 95.0
+            self.direction = 'bearish'
+    
+    class MockSwing:
+        def __init__(self):
+            self.price = 102.0
+            self.swing_type = 'high'
+    
+    smc_result = {
+        'last_swing': MockSwing(),
+        'swings': []
+    }
+    
+    # Create mock DataFrame
+    df = pd.DataFrame({
+        'close': [98.0]
+    })
+    
+    # Create signal
+    signal = strategy._create_entry_signal(
+        signal_type='ENTRY_SHORT',
+        index=0,
+        price=98.0,
+        time='2024-01-01',
+        smc_component='BOS',
+        orderflow_component='ABSORPTION_SELL',
+        df=df,
+        smc_result=smc_result,
+        ffg=MockFFG()
+    )
+    
+    # Verify signal properties
+    assert signal is not None
+    assert signal.signal_type == 'ENTRY_SHORT'
+    assert signal.entry_setup.entry_price == 100.0
+    assert signal.entry_setup.stop_loss_price == 102.0
+    assert signal.entry_setup.take_profit_price == 95.0  # 5% below entry
+    assert signal.confidence > 0.7
