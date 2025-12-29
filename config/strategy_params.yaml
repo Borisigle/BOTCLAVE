@@ -1,0 +1,68 @@
+# Strategy Parameters Configuration
+# Configuration for BTC/XAU Order Flow Absorption Bot
+
+strategy:
+  name: "OrderFlowAbsorption"
+  version: "1.0.0"
+  enabled: true
+
+risk_management:
+  initial_capital: 10000.0
+  position_size_percent: 2.0  # Percentage of capital per trade
+  max_positions: 3
+  use_leverage: false
+  leverage: 1.0
+  max_drawdown_percent: 15.0  # Maximum allowed drawdown before stopping
+
+order_flow:
+  absorption_threshold: 2.0  # Multiplier for detecting absorption
+  imbalance_threshold: 1.5   # Ratio threshold for imbalance
+  min_volume: 1.0            # Minimum volume to consider
+  use_footprint: true
+  use_depth_analysis: true
+  use_dom: true
+
+indicators:
+  cvd_period: 50              # Cumulative Volume Delta period
+  delta_period: 20            # Delta calculation period
+  value_area_percent: 0.7     # Value area percentage (70%)
+  volume_profile_bins: 50     # Number of price bins for volume profile
+
+entry:
+  min_confidence: 0.6         # Minimum signal confidence (0-1)
+  require_trend_alignment: true
+  require_order_block: false
+  min_risk_reward: 2.0        # Minimum risk/reward ratio
+
+exit:
+  use_trailing_stop: true
+  trailing_stop_percent: 2.0
+  take_profit_levels: 3       # Number of take profit levels
+  partial_close_percent: 33.3 # Percentage to close at each TP level
+
+symbols:
+  - "BTC/USDT"
+  - "ETH/USDT"
+  - "BTC/XAU"
+
+timeframes:
+  primary: "15m"
+  secondary: "1h"
+  tertiary: "4h"
+
+filters:
+  min_volume_24h: 100000000   # Minimum 24h volume in quote currency
+  max_spread_percent: 0.5     # Maximum bid-ask spread
+  trading_hours:
+    enabled: false
+    start: "00:00"
+    end: "23:59"
+    timezone: "UTC"
+
+notifications:
+  enabled: false
+  webhook_url: ""
+  notify_on_signal: true
+  notify_on_entry: true
+  notify_on_exit: true
+  notify_on_error: true

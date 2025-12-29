@@ -185,6 +185,13 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Streamlit
+.streamlit/
+
+# Cache directories
+.cache/
+*.cache
+
 # Configuration overrides
 config/local.yaml
 config/local.yml

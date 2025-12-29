@@ -1,0 +1,83 @@
+# Exchange Configuration
+# Settings for exchange connectivity and data fetching
+
+exchange:
+  name: "binance"
+  testnet: true               # Use testnet for testing
+  enable_rate_limit: true
+  timeout: 30000              # Request timeout in milliseconds
+
+api:
+  # API credentials (use environment variables in production)
+  api_key: ""
+  api_secret: ""
+  # Alternative: use environment variables
+  use_env_vars: true
+  env_key_name: "BINANCE_API_KEY"
+  env_secret_name: "BINANCE_API_SECRET"
+
+market_data:
+  default_timeframe: "15m"
+  default_limit: 500
+  max_retries: 3
+  retry_delay: 1000           # Milliseconds
+
+  # WebSocket settings
+  websocket:
+    enabled: false
+    auto_reconnect: true
+    reconnect_delay: 5000
+    ping_interval: 30000
+
+  # Data caching
+  cache:
+    enabled: true
+    cache_dir: "data/cache"
+    ttl: 300                  # Cache TTL in seconds
+
+order_execution:
+  order_type: "limit"         # market, limit, stop_loss
+  time_in_force: "GTC"        # GTC, IOC, FOK
+  post_only: false
+  reduce_only: false
+
+fees:
+  maker: 0.0002               # 0.02%
+  taker: 0.0004               # 0.04%
+  include_in_calculations: true
+
+slippage:
+  model: "percentage"         # percentage, fixed
+  percentage: 0.01            # 0.01% slippage
+  fixed: 0.0
+
+symbols_config:
+  BTC/USDT:
+    min_trade_size: 0.001
+    price_precision: 2
+    quantity_precision: 6
+    tick_size: 0.01
+
+  ETH/USDT:
+    min_trade_size: 0.01
+    price_precision: 2
+    quantity_precision: 5
+    tick_size: 0.01
+
+  BTC/XAU:
+    min_trade_size: 0.001
+    price_precision: 2
+    quantity_precision: 6
+    tick_size: 0.01
+
+rate_limits:
+  requests_per_minute: 1200
+  orders_per_second: 10
+  orders_per_day: 200000
+
+error_handling:
+  max_retries: 3
+  retry_on_timeout: true
+  retry_on_network_error: true
+  log_errors: true
+  alert_on_critical: true
