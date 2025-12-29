@@ -9,12 +9,248 @@ opportunities with proper risk-reward ratios.
 from dataclasses import dataclass
 from typing import List, Optional, Dict
 import pandas as pd
+import numpy as np
 from botclave.engine.indicators import SMCIndicator
 from botclave.engine.footprint import KlineFootprint
 
 
 # ============================================================================
-# 1. SIGNAL DATACLASSES
+# 1. SESSION FILTER (Market Session Detection)
+# ============================================================================
+
+class SessionFilter:
+    """Filters signals by active market sessions (SMC-repo adapted for crypto).
+    
+    Detects if current time falls within major trading sessions:
+    - London: 3:00-12:00 UTC (high liquidity)
+    - New York: 13:00-22:00 UTC (high liquidity) 
+    - Asian Kill Zone: 0:00-4:00 UTC (Tokyo open momentum)
+    
+    Usage:
+        session_filter = SessionFilter(['London', 'New York', 'Asian Kill Zone'])
+        if session_filter.is_active_session(df):
+            # Generate signal
+    """
+    
+    def __init__(self, active_sessions: List[str] = None):
+        """Initialize with list of active sessions.
+        
+        Args:
+            active_sessions: List of session names to consider active.
+                          Options: 'London', 'New York', 'Asian Kill Zone'
+        """
+        if active_sessions is None:
+            active_sessions = ['London', 'New York', 'Asian Kill Zone']
+        
+        self.active_sessions = active_sessions
+        
+        # Session time ranges in UTC (hour: 0-23)
+        self.session_hours = {
+            'London': (3, 12),  # 03:00-12:00 UTC
+            'New York': (13, 22),  # 13:00-22:00 UTC  
+            'Asian Kill Zone': (0, 4),  # 00:00-04:00 UTC
+            'Tokyo': (0, 9),  # 00:00-09:00 UTC (full Asian session)
+            'Sydney': (22, 7),  # 22:00-07:00 UTC (wraps around midnight)
+        }
+    
+    def is_active_session(self, df: pd.DataFrame) -> bool:
+        """Check if current candle falls within active sessions.
+        
+        Args:
+            df: DataFrame with datetime index
+            
+        Returns:
+            True if current time is in an active session
+        """
+        if df.empty or not hasattr(df.index, 'time'):
+            return False
+            
+        # Get current hour in UTC
+        current_time = df.index[-1]
+        if hasattr(current_time, 'tz_localize'):
+            # Convert to UTC if timezone aware
+            if current_time.tz is not None:
+                current_time = current_time.tz_convert('UTC')
+            else:
+                current_time = current_time.tz_localize('UTC')
+        
+        current_hour = current_time.hour
+        
+        # Check each active session
+        for session in self.active_sessions:
+            if session in self.session_hours:
+                start, end = self.session_hours[session]
+                
+                # Handle sessions that wrap around midnight (like Sydney)
+                if start <= end:
+                    if start <= current_hour < end:
+                        return True
+                else:
+                    # Session wraps around midnight (e.g., 22:00-07:00)
+                    if current_hour >= start or current_hour < end:
+                        return True
+        
+        return False
+    
+    def get_current_session(self, df: pd.DataFrame) -> str:
+        """Get name of current session.
+        
+        Args:
+            df: DataFrame with datetime index
+            
+        Returns:
+            Current session name or 'Outside Session'
+        """
+        if df.empty or not hasattr(df.index, 'time'):
+            return 'Outside Session'
+            
+        current_time = df.index[-1]
+        if hasattr(current_time, 'tz_localize'):
+            if current_time.tz is not None:
+                current_time = current_time.tz_convert('UTC')
+            else:
+                current_time = current_time.tz_localize('UTC')
+                
+        current_hour = current_time.hour
+        
+        for session, (start, end) in self.session_hours.items():
+            # Handle sessions that wrap around midnight
+            if start <= end:
+                if start <= current_hour < end:
+                    return session
+            else:
+                if current_hour >= start or current_hour < end:
+                    return session
+        
+        return 'Outside Session'
+
+
+# ============================================================================
+# 2. ATR CALCULATOR (Dynamic Risk Management)
+# ============================================================================
+
+class ATRCalculator:
+    """Calculates Average True Range for dynamic SL/TP sizing.
+    
+    Uses ATR to calculate risk-based stop losses and take profits:
+    - SL = Entry ± (2 × ATR) 
+    - TP = Entry ± (3 × ATR) for 1.5:1 minimum RR
+    - TP = Entry ± (4 × ATR) for 2:1 RR
+    
+    Usage:
+        atr_calc = ATRCalculator(period=14)
+        atr = atr_calc.calculate(df).iloc[-1]
+        sl = atr_calc.get_sl_price(entry_price, atr, 'long')
+        tp = atr_calc.get_tp_price(entry_price, atr, 'long', rr_ratio=2.0)
+    """
+    
+    def __init__(self, period: int = 14):
+        """Initialize ATR calculator.
+        
+        Args:
+            period: ATR calculation period (default: 14)
+        """
+        self.period = period
+    
+    def calculate(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate ATR series.
+        
+        Args:
+            df: DataFrame with OHLC columns
+            
+        Returns:
+            ATR series
+        """
+        if len(df) < self.period:
+            return pd.Series([0.0] * len(df), index=df.index)
+        
+        # Calculate true range
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # Calculate ATR using exponential moving average (Wilder's method)
+        atr = true_range.ewm(alpha=1/self.period, min_periods=self.period).mean()
+        
+        return atr
+    
+    def get_sl_price(self, entry_price: float, atr: float, 
+                     direction: str, multiplier: float = 2.0) -> float:
+        """Calculate stop loss price based on ATR.
+        
+        Args:
+            entry_price: Trade entry price
+            atr: Current ATR value
+            direction: 'long' or 'short'
+            multiplier: ATR multiplier (default: 2.0)
+            
+        Returns:
+            Stop loss price
+        """
+        if direction == 'long':
+            return entry_price - (atr * multiplier)
+        elif direction == 'short':
+            return entry_price + (atr * multiplier)
+        else:
+            raise ValueError("Direction must be 'long' or 'short'")
+    
+    def get_tp_price(self, entry_price: float, atr: float,
+                     direction: str, rr_ratio: float = 2.0) -> float:
+        """Calculate take profit price based on risk/reward ratio.
+        
+        Args:
+            entry_price: Trade entry price
+            atr: Current ATR value
+            direction: 'long' or 'short'
+            rr_ratio: Risk/reward ratio (default: 2.0 = 2:1)
+            
+        Returns:
+            Take profit price
+        """
+        risk_distance = atr * 2.0  # SL distance
+        reward_distance = risk_distance * rr_ratio
+        
+        if direction == 'long':
+            return entry_price + reward_distance
+        elif direction == 'short':
+            return entry_price - reward_distance
+        else:
+            raise ValueError("Direction must be 'long' or 'short'")
+    
+    def get_rr_setup(self, entry_price: float, atr: float,
+                    direction: str, rr_ratio: float = 2.0,
+                    atr_multiplier: float = 2.0) -> RiskRewardSetup:
+        """Create complete RiskRewardSetup based on ATR.
+        
+        Args:
+            entry_price: Trade entry price
+            atr: Current ATR value
+            direction: 'long' or 'short'  
+            rr_ratio: Risk/reward ratio (default: 2.0)
+            atr_multiplier: ATR multiplier for SL (default: 2.0)
+            
+        Returns:
+            RiskRewardSetup with SL/TP calculated from ATR
+        """
+        sl_price = self.get_sl_price(entry_price, atr, direction, atr_multiplier)
+        tp_price = self.get_tp_price(entry_price, atr, direction, rr_ratio)
+        
+        return RiskRewardSetup(
+            entry_price=entry_price,
+            stop_loss_price=sl_price,
+            take_profit_price=tp_price,
+            position_size=1.0
+        )
+
+
+# ============================================================================
+# 3. SIGNAL DATACLASSES
 # ============================================================================
 
 @dataclass
@@ -199,11 +435,17 @@ class TradingStrategy:
                  min_rr: float = 3.0,
                  min_confidence: float = 0.7,
                  delta_threshold: float = 0.65,
-                 volume_threshold: float = 100000):
+                 volume_threshold: float = 100000,
+                 active_sessions: List[str] = None,
+                 atr_period: int = 14):
         """
         Args:
             min_rr: Minimum Risk/Reward ratio (default 1:3)
             min_confidence: Minimum signal confidence (0-1)
+            delta_threshold: Orderflow absorption threshold (0-1)
+            volume_threshold: Minimum volume for absorption detection
+            active_sessions: List of active sessions to trade
+            atr_period: ATR calculation period for dynamic SL/TP
         """
         self.min_rr = min_rr
         self.min_confidence = min_confidence
@@ -213,6 +455,8 @@ class TradingStrategy:
             delta_threshold=delta_threshold,
             volume_threshold=volume_threshold
         )
+        self.session_filter = SessionFilter(active_sessions)
+        self.atr_calc = ATRCalculator(period=atr_period)
     
     def analyze(self, df: pd.DataFrame, 
                footprints: List[KlineFootprint]) -> Dict:
@@ -456,6 +700,178 @@ class TradingStrategy:
             # Return the strongest signal (highest confidence)
             return max(signals, key=lambda s: s.confidence)
         return None
+    
+    def generate_signal(self, df_15m: pd.DataFrame, df_1h: pd.DataFrame, 
+                       df_4h: pd.DataFrame, footprints_15m: List[KlineFootprint]) -> Optional[Signal]:
+        """Generate multi-timeframe confluence signal with detailed explanation.
+        
+        Combines:
+        1. Session filtering (only trade during active sessions)
+        2. 4H bias analysis (market structure direction)
+        3. 1H confirmation swing levels (support/resistance)
+        4. 15m entry signals (FFG + orderflow absorption)
+        5. ATR-based SL/TP sizing (dynamic risk management)
+        6. Detailed signal explanation (why this trade)
+        
+        Args:
+            df_15m: 15-minute timeframe DataFrame for entry
+            df_1h: 1-hour timeframe DataFrame for confirmation  
+            df_4h: 4-hour timeframe DataFrame for bias
+            footprints_15m: 15-minute footprint data for orderflow
+            
+        Returns:
+            Signal with detailed explanation or None if no valid signal
+        """
+        
+        # 1. Check active session
+        if not self.session_filter.is_active_session(df_15m):
+            current_session = self.session_filter.get_current_session(df_15m)
+            return None  # Don't trade outside active sessions
+        
+        # 2. Analyze 4H for bias (market structure direction)
+        smc_4h = self.smc_analyzer.analyze(df_4h)
+        bias_4h = self._determine_bias(smc_4h)
+        
+        # Get 4H structural levels
+        last_bos_4h = smc_4h.get('last_bos')
+        active_ffg_4h = smc_4h.get('active_ffg', [])
+        
+        if bias_4h == 'neutral':
+            return None  # No clear bias, skip trade
+        
+        # 3. Analyze 1H for confirmation (swing levels)
+        smc_1h = self.smc_analyzer.analyze(df_1h)
+        swings_1h = smc_1h.get('swings', [])
+        
+        # Get last swing for confirmation
+        last_swing_1h = smc_1h.get('last_swing')
+        if not last_swing_1h:
+            return None  # No structure to confirm against
+        
+        # 4. Analyze 15m for entry signals
+        smc_15m = self.smc_analyzer.analyze(df_15m)
+        
+        # Get orderflow absorption zones
+        absorption_zones = self.orderflow_analyzer.find_absorption_zones(
+            df_15m, footprints_15m, lookback=5
+        )
+        
+        # 5. Check for confluence across timeframes
+        current_price = df_15m['close'].iloc[-1]
+        
+        # Look for active FFG with matching direction
+        active_ffg = smc_15m.get('active_ffg', [])
+        if not active_ffg:
+            return None
+        
+        # Find FFG that matches 4H bias
+        entry_ffg = None
+        entry_absorption = None
+        
+        for ffg in active_ffg:
+            if (bias_4h == 'bullish' and ffg.direction == 'bullish'):
+                # Check for buy absorption in this FFG
+                absorption = self._find_absorption_in_range(
+                    absorption_zones, ffg.bottom_price, ffg.top_price
+                )
+                if absorption == 'BUY':
+                    entry_ffg = ffg
+                    entry_absorption = absorption
+                    break
+                    
+            elif (bias_4h == 'bearish' and ffg.direction == 'bearish'):
+                # Check for sell absorption in this FFG  
+                absorption = self._find_absorption_in_range(
+                    absorption_zones, ffg.bottom_price, ffg.top_price
+                )
+                if absorption == 'SELL':
+                    entry_ffg = ffg
+                    entry_absorption = absorption
+                    break
+        
+        if not entry_ffg:
+            return None  # No confluence FFG found
+        
+        # 6. Calculate ATR-based SL/TP
+        atr_15m = self.atr_calc.calculate(df_15m).iloc[-1]
+        
+        if bias_4h == 'bullish':
+            entry_price = entry_ffg.bottom_price
+            direction = 'long'
+            signal_type = 'ENTRY_LONG'
+        else:  # bearish
+            entry_price = entry_ffg.top_price
+            direction = 'short' 
+            signal_type = 'ENTRY_SHORT'
+        
+        # Create ATR-based setup
+        atr_setup = self.atr_calc.get_rr_setup(
+            entry_price=entry_price,
+            atr=atr_15m,
+            direction=direction,
+            rr_ratio=self.min_rr / 2.0  # Convert min_rr to full ratio
+        )
+        
+        # Verify ATR setup meets minimum RR
+        if not atr_setup.is_valid_rr(self.min_rr):
+            return None  # Risk/reward not sufficient
+        
+        # 7. Calculate confidence based on multi-timeframe factors
+        confidence = 0.5  # Base confidence
+        
+        # Boost for BOS alignment
+        if last_bos_4h and last_bos_4h.direction == bias_4h:
+            confidence += 0.2
+        
+        # Boost for 1H swing confirmation
+        if last_swing_1h:
+            if (direction == 'long' and last_swing_1h.swing_type == 'low'):
+                confidence += 0.15
+            elif (direction == 'short' and last_swing_1h.swing_type == 'high'):
+                confidence += 0.15
+        
+        # Boost for orderflow absorption strength
+        strength = self.orderflow_analyzer.get_absorption_strength(
+            footprints_15m[-1], entry_price
+        )
+        confidence += (strength * 0.15)
+        
+        # Boost for good RR
+        if atr_setup.risk_reward_ratio > self.min_rr:
+            confidence += min(0.1, (atr_setup.risk_reward_ratio - self.min_rr) * 0.05)
+        
+        confidence = min(1.0, confidence)  # Cap at 1.0
+        
+        # 8. Build detailed explanation
+        session_name = self.session_filter.get_current_session(df_15m)
+        
+        reason_lines = [
+            f"📅 SESSION: Trading during {session_name}",
+            f"📊 4H BIAS: {bias_4h.upper()} (BOS: {last_bos_4h.price:.2f if last_bos_4h else 'N/A'})",
+            f"🔍 1H CONFIRMATION: {last_swing_1h.swing_type} @ {last_swing_1h.price:.2f}",
+            f"🎯 15m ENTRY: {signal_type} at FFG [{entry_ffg.bottom_price:.2f}-{entry_ffg.top_price:.2f}]",
+            f"💰 ORDERFLOW: {entry_absorption} absorption detected",
+            f"📏 RISK: 2×ATR = {atr_15m*2:.2f} ({atr_15m:.2f} ATR)",
+            f"🎲 RR RATIO: {atr_setup.risk_reward_ratio:.1f}:1",
+            f"✅ CONFIDENCE: {confidence:.1%}"
+        ]
+        
+        # Check minimum confidence
+        if confidence < self.min_confidence:
+            return None
+        
+        # 9. Create final signal
+        return Signal(
+            signal_type=signal_type,
+            index=len(df_15m) - 1,
+            price=current_price,
+            time=str(df_15m.index[-1]),
+            confidence=confidence,
+            smc_component=f"{bias_4h.upper()}_BOS",
+            orderflow_component=f"ABSORPTION_{entry_absorption}",
+            entry_setup=atr_setup,
+            reason="\n".join(reason_lines)
+        )
 
 
 # ============================================================================
@@ -474,12 +890,13 @@ class MultiTimeframeStrategy:
             timeframes = ['15m', '1h', '4h', 'd']
         
         self.timeframes = timeframes
-        self.strategies = {tf: TradingStrategy() for tf in timeframes}
+        # Use a single strategy instance with new MTF generation logic
+        self.strategy = TradingStrategy()
     
     def analyze(self, df_dict: Dict[str, pd.DataFrame],
                footprints_dict: Dict[str, List[KlineFootprint]]) -> Dict:
         """
-        Analyzes multiple timeframes
+        Analyzes multiple timeframes using enhanced confluence logic
         
         Args:
             df_dict: {'15m': df, '1h': df, '4h': df, 'd': df}
@@ -487,19 +904,77 @@ class MultiTimeframeStrategy:
         
         Returns:
             {
-                'entry_signal': Signal (from 15m),
-                'stop_signal': Signal (from 1h),
-                'bias_signal': Signal (from 4h/d),
-                'confluence_score': 0-1,
-                'recommendation': 'TAKE_TRADE' / 'SKIP_TRADE' / 'WAIT'
+                'entry_signal': Signal (from 15m, enhanced with MTF analysis),
+                'stop_signal': None (deprecated - use generate_signal instead),
+                'bias_signal': None (deprecated - integrated into entry_signal),
+                'confluence_score': 0-1 (calculated from signal confidence and components),
+                'recommendation': 'TAKE_TRADE' / 'SKIP_TRADE' / 'WAIT',
+                'session_filter': session status,
+                'mtf_analysis': detailed breakdown
             }
         """
+        # Use new generate_signal method for proper MTF confluence
+        signal = None
+        confluence_score = 0.0
+        
+        # Ensure we have required timeframes
+        if '15m' not in df_dict or '4h' not in df_dict:
+            # Fall back to old method if missing required timeframes
+            return self._legacy_analyze(df_dict, footprints_dict)
+        
+        # Use enhanced MTF signal generation
+        df_15m = df_dict['15m']
+        df_1h = df_dict.get('1h', df_dict['15m'])  # Fallback to 15m if no 1h
+        df_4h = df_dict['4h']
+        footprints_15m = footprints_dict.get('15m', [])
+        
+        if not footprints_15m:
+            return {
+                'entry_signal': None,
+                'stop_signal': None,
+                'bias_signal': None,
+                'confluence_score': 0.0,
+                'recommendation': 'WAIT',
+                'session_filter': self.strategy.session_filter.get_current_session(df_15m),
+                'mtf_analysis': {
+                    'error': 'No 15m footprint data available'
+                }
+            }
+        
+        # Generate MTF signal
+        signal = self.strategy.generate_signal(df_15m, df_1h, df_4h, footprints_15m)
+        
+        if signal:
+            confluence_score = signal.confidence
+            recommendation = 'TAKE_TRADE' if confluence_score >= 0.7 else 'SKIP_TRADE'
+        else:
+            recommendation = 'WAIT'
+        
+        return {
+            'entry_signal': signal,
+            'stop_signal': None,  # Deprecated - SL/TP now in signal.entry_setup
+            'bias_signal': None,  # Deprecated - bias integrated into signal
+            'confluence_score': confluence_score,
+            'recommendation': recommendation,
+            'session_filter': self.strategy.session_filter.get_current_session(df_15m),
+            'mtf_analysis': {
+                'has_4h_bias': '4h' in df_dict,
+                'has_1h_confirmation': '1h' in df_dict,
+                'has_orderflow': len(footprints_15m) > 0,
+                'signal_details': signal.reason if signal else 'No signal generated'
+            }
+        }
+    
+    def _legacy_analyze(self, df_dict: Dict[str, pd.DataFrame],
+                       footprints_dict: Dict[str, List[KlineFootprint]]) -> Dict:
+        """Backward compatibility method for older analyze() behavior"""
+        strategies = {tf: TradingStrategy() for tf in self.timeframes}
         results = {}
         
         # Analyze each timeframe
         for tf in self.timeframes:
             if tf in df_dict and tf in footprints_dict:
-                results[tf] = self.strategies[tf].analyze(
+                results[tf] = strategies[tf].analyze(
                     df_dict[tf], footprints_dict[tf]
                 )
         
