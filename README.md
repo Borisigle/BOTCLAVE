@@ -20,6 +20,13 @@
   - Liquidity void identification
   - Fair value gap detection
 
+- **🕐 Enhanced Strategy Features**
+  - **Session Filtering**: Trade only during London, NYC, Asian Kill Zone sessions
+  - **ATR-Based Risk Management**: Dynamic stop loss and take profit sizing
+  - **Multi-Timeframe Confluence**: 4H bias + 1H confirmation + 15m entry signals
+  - **Detailed Signal Explanations**: Complete trade justification with emojis
+  - **Dynamic Position Sizing**: Risk-based position management
+
 - **💹 Exchange Integration**
   - Binance connector via CCXT
   - WebSocket support for real-time data
