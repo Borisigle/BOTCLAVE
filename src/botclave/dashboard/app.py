@@ -1,215 +1,365 @@
 """
 Streamlit Dashboard Application
 
-Main dashboard for visualizing order flow data and strategy performance.
+Professional trading dashboard with real-time alerts, SMC analysis,
+and order flow visualization for BTC/XAU trading.
 """
 
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
+import time
 from typing import Optional
 
-from .charts import ChartGenerator
-from .metrics import MetricsCalculator
+# Import components
+from .components.alert_panel import show_alert_panel
+from .components.chart_panel import create_smc_chart
+from .components.metrics_panel import show_metrics_panel
+from .components.orderflow_panel import show_orderflow_panel
+from .components.signals_log import show_signals_log, export_signals_to_csv
+
+# Import utilities
+from .utils.data_loader import DataLoader
+from .utils.alert_manager import AlertManager
+
+# Import bot engine
+from botclave.engine.indicators import SMCIndicator
+from botclave.engine.strategy import TradingStrategy
 
 
-def init_session_state():
-    """Initialize Streamlit session state."""
+def init_session_state() -> None:
+    """Initialize Streamlit session state variables."""
     if "data_loaded" not in st.session_state:
         st.session_state.data_loaded = False
     if "df" not in st.session_state:
         st.session_state.df = None
     if "signals" not in st.session_state:
-        st.session_state.signals = None
+        st.session_state.signals = []
+    if "smc_analysis" not in st.session_state:
+        st.session_state.smc_analysis = {}
+    if "orderflow_metrics" not in st.session_state:
+        st.session_state.orderflow_metrics = {}
+    if "footprints" not in st.session_state:
+        st.session_state.footprints = []
+    if "absorption_zones" not in st.session_state:
+        st.session_state.absorption_zones = {}
+    if "data_loader" not in st.session_state:
+        st.session_state.data_loader = DataLoader()
+    if "alert_manager" not in st.session_state:
+        st.session_state.alert_manager = AlertManager()
 
 
-def render_sidebar():
-    """Render sidebar controls."""
-    st.sidebar.title("⚙️ Settings")
+def render_sidebar() -> tuple:
+    """
+    Render sidebar configuration controls.
 
+    Returns:
+        Tuple of (symbol, timeframe, lookback, min_confidence, min_rr, auto_refresh)
+    """
+    st.sidebar.title("⚙️ Configuration")
+
+    # Symbol selection
     symbol = st.sidebar.selectbox(
-        "Symbol",
-        ["BTC/USDT", "ETH/USDT", "BTC/XAU", "SOL/USDT"],
+        "Select Symbol",
+        ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"],
         index=0,
     )
 
+    # Timeframe selection
     timeframe = st.sidebar.selectbox(
         "Timeframe",
-        ["1m", "5m", "15m", "1h", "4h", "1d"],
+        ["1m", "5m", "15m", "1h", "4h"],
         index=2,
     )
 
+    # Lookback period
     lookback = st.sidebar.slider(
-        "Lookback Period (bars)",
+        "Lookback Period (candles)",
         min_value=50,
         max_value=1000,
         value=200,
         step=50,
     )
 
-    return symbol, timeframe, lookback
+    st.sidebar.markdown("---")
+
+    # Signal filters
+    st.sidebar.markdown("### 📊 Signal Filters")
+
+    min_confidence = st.sidebar.slider(
+        "Min Confidence",
+        min_value=0.5,
+        max_value=1.0,
+        value=0.7,
+        step=0.05,
+        help="Minimum confidence level to show signals",
+    )
+
+    min_rr = st.sidebar.slider(
+        "Min Risk/Reward",
+        min_value=1.0,
+        max_value=5.0,
+        value=3.0,
+        step=0.5,
+        help="Minimum risk-reward ratio for signals",
+    )
+
+    st.sidebar.markdown("---")
+
+    # Auto-refresh settings
+    st.sidebar.markdown("### 🔄 Auto-refresh")
+
+    auto_refresh = st.sidebar.checkbox(
+        "Enable Auto-refresh",
+        value=True,
+        help="Automatically refresh data at specified interval",
+    )
+
+    refresh_interval = st.sidebar.slider(
+        "Refresh Interval (seconds)",
+        min_value=1,
+        max_value=60,
+        value=5,
+        disabled=not auto_refresh,
+    )
+
+    st.sidebar.markdown("---")
+
+    # Alert settings
+    if "alert_manager" in st.session_state:
+        st.session_state.alert_manager.render_settings()
+
+    return (
+        symbol,
+        timeframe,
+        lookback,
+        min_confidence,
+        min_rr,
+        auto_refresh,
+        refresh_interval,
+    )
 
 
-def render_metrics_row(metrics_data: dict):
-    """Render metrics in a row of columns."""
-    col1, col2, col3, col4 = st.columns(4)
+def load_and_analyze_data(
+    symbol: str,
+    timeframe: str,
+    lookback: int,
+    min_confidence: float,
+    min_rr: float,
+) -> None:
+    """
+    Load market data and perform analysis.
 
-    with col1:
-        st.metric(
-            "Total Signals",
-            metrics_data.get("total_signals", 0),
-            delta=None,
+    Args:
+        symbol: Trading pair symbol
+        timeframe: Chart timeframe
+        lookback: Number of candles to analyze
+        min_confidence: Minimum confidence threshold
+        min_rr: Minimum risk-reward ratio
+    """
+    data_loader = st.session_state.data_loader
+
+    with st.spinner(f"Loading {lookback} candles for {symbol} ({timeframe})..."):
+        # Fetch OHLCV data
+        df = data_loader.fetch_ohlcv_sync(symbol, timeframe, lookback)
+
+        if df.empty:
+            st.error("Failed to load market data. Please try again.")
+            return
+
+        st.session_state.df = df
+
+        # Generate footprints (simplified for now)
+        footprints = data_loader.generate_footprints(df)
+        st.session_state.footprints = footprints
+
+        # Calculate orderflow metrics
+        orderflow_metrics = data_loader.calculate_orderflow_metrics(df, footprints)
+        st.session_state.orderflow_metrics = orderflow_metrics
+
+        # Perform SMC analysis
+        smc_indicator = SMCIndicator()
+        smc_analysis = smc_indicator.analyze(df)
+        st.session_state.smc_analysis = smc_analysis
+
+        # Run trading strategy
+        strategy = TradingStrategy(
+            min_confidence=min_confidence,
+            min_rr=min_rr,
         )
 
-    with col2:
-        win_rate = metrics_data.get("win_rate", 0)
-        st.metric(
-            "Win Rate",
-            f"{win_rate:.1f}%",
-            delta=f"{win_rate - 50:.1f}%",
+        result = strategy.analyze(df, footprints)
+        st.session_state.absorption_zones = result.get("absorption_zones", {})
+
+        # Get latest signal
+        signals = result.get("signals", [])
+        st.session_state.signals = signals
+
+        # Update alert manager with latest signal
+        if signals:
+            current_signal = signals[-1] if len(signals) > 0 else None
+            st.session_state.alert_manager.process_signal(current_signal)
+        else:
+            st.session_state.alert_manager.process_signal(None)
+
+        st.session_state.data_loaded = True
+
+        st.success(
+            f"✅ Loaded {len(df)} candles for {symbol} ({timeframe})\n"
+            f"📊 Found {len(smc_analysis.get('swings', []))} swings, "
+            f"{len(smc_analysis.get('active_ffg', []))} active FFGs, "
+            f"{len(smc_analysis.get('order_blocks', []))} order blocks\n"
+            f"🎯 Generated {len(signals)} signal(s)"
         )
-
-    with col3:
-        st.metric(
-            "Total P&L",
-            f"${metrics_data.get('total_pnl', 0):.2f}",
-            delta=None,
-        )
-
-    with col4:
-        st.metric(
-            "Sharpe Ratio",
-            f"{metrics_data.get('sharpe_ratio', 0):.2f}",
-            delta=None,
-        )
-
-
-def render_order_flow_tab():
-    """Render order flow analysis tab."""
-    st.header("📊 Order Flow Analysis")
-
-    chart_gen = ChartGenerator()
-
-    if st.session_state.df is not None:
-        st.subheader("Footprint Chart")
-        footprint_fig = chart_gen.create_footprint_chart(st.session_state.df)
-        st.plotly_chart(footprint_fig, use_container_width=True)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("Volume Profile")
-            volume_fig = chart_gen.create_volume_profile(st.session_state.df)
-            st.plotly_chart(volume_fig, use_container_width=True)
-
-        with col2:
-            st.subheader("Delta Analysis")
-            delta_fig = chart_gen.create_delta_chart(st.session_state.df)
-            st.plotly_chart(delta_fig, use_container_width=True)
-    else:
-        st.info("Load data to view order flow analysis")
-
-
-def render_strategy_tab():
-    """Render strategy performance tab."""
-    st.header("🎯 Strategy Performance")
-
-    if st.session_state.signals is not None:
-        metrics_calc = MetricsCalculator()
-        metrics = metrics_calc.calculate_strategy_metrics(
-            st.session_state.df, st.session_state.signals
-        )
-
-        render_metrics_row(metrics)
-
-        st.subheader("Equity Curve")
-        chart_gen = ChartGenerator()
-        equity_fig = chart_gen.create_equity_curve(metrics.get("equity_curve", []))
-        st.plotly_chart(equity_fig, use_container_width=True)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("Trade Distribution")
-            trade_fig = chart_gen.create_trade_distribution(
-                metrics.get("trades", [])
-            )
-            st.plotly_chart(trade_fig, use_container_width=True)
-
-        with col2:
-            st.subheader("Drawdown Analysis")
-            dd_fig = chart_gen.create_drawdown_chart(
-                metrics.get("equity_curve", [])
-            )
-            st.plotly_chart(dd_fig, use_container_width=True)
-    else:
-        st.info("Run strategy to view performance metrics")
-
-
-def render_depth_tab():
-    """Render depth analysis tab."""
-    st.header("📈 Depth Analysis")
-
-    if st.session_state.df is not None:
-        chart_gen = ChartGenerator()
-
-        st.subheader("Order Book Heatmap")
-        heatmap_fig = chart_gen.create_depth_heatmap(st.session_state.df)
-        st.plotly_chart(heatmap_fig, use_container_width=True)
-
-        st.subheader("Liquidity Levels")
-        liquidity_fig = chart_gen.create_liquidity_levels(st.session_state.df)
-        st.plotly_chart(liquidity_fig, use_container_width=True)
-    else:
-        st.info("Load data to view depth analysis")
 
 
 def main():
     """Main dashboard application."""
+    # Configure Streamlit page
     st.set_page_config(
-        page_title="BTC/XAU Order Flow Bot",
-        page_icon="📈",
+        page_title="BOTCLAVE - BTC/XAU Trader",
+        page_icon="🤖",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    st.title("🤖 BTC/XAU Order Flow Absorption Bot")
-    st.markdown("---")
-
+    # Initialize session state
     init_session_state()
 
-    symbol, timeframe, lookback = render_sidebar()
+    # Page header
+    st.title("🤖 BOTCLAVE - BTC/XAU Order Flow Trading Bot")
+    st.markdown(
+        """
+        Professional trading dashboard with Smart Money Concepts (SMC) analysis,
+        order flow visualization, and real-time signal alerts.
+        """
+    )
+    st.markdown("---")
 
+    # Render sidebar and get configuration
+    (
+        symbol,
+        timeframe,
+        lookback,
+        min_confidence,
+        min_rr,
+        auto_refresh,
+        refresh_interval,
+    ) = render_sidebar()
+
+    # Load data button
     if st.sidebar.button("🔄 Load Data", type="primary"):
-        with st.spinner("Loading market data..."):
-            st.session_state.data_loaded = True
-            st.success(f"Loaded {lookback} bars for {symbol} ({timeframe})")
+        load_and_analyze_data(symbol, timeframe, lookback, min_confidence, min_rr)
 
-    tabs = st.tabs(["📊 Order Flow", "🎯 Strategy", "📈 Depth Analysis", "⚙️ Settings"])
+    # Check if data is loaded
+    if not st.session_state.data_loaded:
+        st.info("👈 Configure settings and click 'Load Data' to start analysis")
+        st.caption(
+            "Select a symbol, timeframe, and adjust filters, then load data to begin"
+        )
+        return
 
-    with tabs[0]:
-        render_order_flow_tab()
+    # Get current price
+    df = st.session_state.df
+    current_price = df["close"].iloc[-1]
 
-    with tabs[1]:
-        render_strategy_tab()
+    # Get current signal from alert manager
+    alert_manager = st.session_state.alert_manager
+    current_signal = alert_manager.get_current_signal()
 
-    with tabs[2]:
-        render_depth_tab()
+    # SECTION 1: ALERT PANEL (Top - Sticky)
+    show_alert_panel(current_signal)
 
-    with tabs[3]:
-        st.header("⚙️ Strategy Settings")
-        st.subheader("Risk Management")
+    st.markdown("---")
 
-        col1, col2 = st.columns(2)
+    # SECTION 2: TABS
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📊 Chart", "📈 Metrics", "🌊 Orderflow", "📋 Signals Log"]
+    )
+
+    # TAB 1: CHART
+    with tab1:
+        st.subheader("Candlestick + SMC Analysis")
+
+        # Create and display chart
+        smc_analysis = st.session_state.smc_analysis
+        fig = create_smc_chart(df, smc_analysis, current_signal)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Additional chart info
+        col1, col2, col3 = st.columns(3)
+
         with col1:
-            st.number_input("Position Size (%)", min_value=0.1, max_value=10.0, value=2.0)
-            st.number_input("Stop Loss (%)", min_value=0.1, max_value=10.0, value=2.0)
-        with col2:
-            st.number_input("Take Profit (%)", min_value=0.1, max_value=20.0, value=4.0)
-            st.number_input("Max Positions", min_value=1, max_value=10, value=3)
+            st.info(
+                f"**Current Price:** ${current_price:,.2f}\n\n"
+                f"**ATR:** ${df['high'].iloc[-1] - df['low'].iloc[-1]:,.2f}"
+            )
 
-        if st.button("💾 Save Settings"):
-            st.success("Settings saved successfully!")
+        with col2:
+            st.info(
+                f"**Active FFGs:** {len(smc_analysis.get('active_ffg', []))}\n\n"
+                f"**Order Blocks:** {len(smc_analysis.get('order_blocks', []))}"
+            )
+
+        with col3:
+            st.info(
+                f"**Swings:** {len(smc_analysis.get('swings', []))}\n\n"
+                f"**Market Bias:** {smc_analysis.get('last_bos', {}).get('direction', 'NEUTRAL').upper()}"
+            )
+
+    # TAB 2: METRICS
+    with tab2:
+        st.subheader("Live Market Metrics")
+
+        orderflow_metrics = st.session_state.orderflow_metrics
+        absorption_zones = st.session_state.absorption_zones
+
+        show_metrics_panel(
+            df,
+            smc_analysis,
+            orderflow_metrics,
+            current_price,
+        )
+
+    # TAB 3: ORDERFLOW
+    with tab3:
+        st.subheader("Order Flow Analysis")
+
+        footprints = st.session_state.footprints
+
+        show_orderflow_panel(
+            df,
+            footprints,
+            absorption_zones,
+            current_price,
+        )
+
+    # TAB 4: SIGNALS LOG
+    with tab4:
+        st.subheader("Signal History")
+
+        signals_history = st.session_state.signals
+        show_signals_log(signals_history)
+
+        # Export button
+        if signals_history:
+            st.markdown("---")
+            col1, col2 = st.columns([1, 4])
+
+            with col1:
+                if st.button("📥 Export to CSV"):
+                    csv_data = export_signals_to_csv(signals_history)
+                    st.download_button(
+                        label="Download Signals CSV",
+                        data=csv_data,
+                        file_name=f"signals_{symbol}_{timeframe}.csv",
+                        mime="text/csv",
+                    )
+
+    # Auto-refresh
+    if auto_refresh and st.session_state.data_loaded:
+        time.sleep(refresh_interval)
+        load_and_analyze_data(symbol, timeframe, lookback, min_confidence, min_rr)
+        st.rerun()
 
 
 if __name__ == "__main__":
