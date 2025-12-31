@@ -4,7 +4,6 @@ Data Loader Utility
 Handles fetching live and historical data from Binance.
 """
 
-import asyncio
 import random
 import pandas as pd
 from typing import Optional, List
@@ -23,7 +22,7 @@ class DataLoader:
         """Initialize data loader with Binance connector."""
         self.connector = BinanceConnector()
 
-    async def fetch_ohlcv(
+    def fetch_ohlcv(
         self,
         symbol: str = "BTC/USDT",
         timeframe: str = "15m",
@@ -41,22 +40,11 @@ class DataLoader:
             DataFrame with OHLCV data
         """
         try:
-            ohlcv_data = await self.connector.fetch_ohlcv(
-                symbol, timeframe, limit
-            )
+            # fetch_ohlcv now returns a DataFrame directly
+            df = self.connector.fetch_ohlcv(symbol, timeframe, limit)
 
-            if not ohlcv_data:
+            if df.empty:
                 return pd.DataFrame()
-
-            # Convert to DataFrame
-            df = pd.DataFrame(
-                ohlcv_data,
-                columns=["timestamp", "open", "high", "low", "close", "volume"],
-            )
-
-            # Convert timestamp to datetime
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            df.set_index("timestamp", inplace=True)
 
             # Ensure numeric types
             for col in ["open", "high", "low", "close", "volume"]:
@@ -85,16 +73,10 @@ class DataLoader:
         Returns:
             DataFrame with OHLCV data
         """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(
-                self.fetch_ohlcv(symbol, timeframe, limit)
-            )
-        finally:
-            loop.close()
+        # fetch_ohlcv is now synchronous, so we can call it directly
+        return self.fetch_ohlcv(symbol, timeframe, limit)
 
-    async def fetch_order_book(
+    def fetch_order_book(
         self,
         symbol: str = "BTC/USDT",
         limit: int = 20,
@@ -110,7 +92,7 @@ class DataLoader:
             Dictionary with bids and asks
         """
         try:
-            order_book = await self.connector.fetch_order_book(symbol, limit)
+            order_book = self.connector.fetch_order_book(symbol, limit)
             return order_book
         except Exception as e:
             print(f"Error fetching order book: {e}")
@@ -131,16 +113,10 @@ class DataLoader:
         Returns:
             Dictionary with bids and asks
         """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(
-                self.fetch_order_book(symbol, limit)
-            )
-        finally:
-            loop.close()
+        # fetch_order_book is now synchronous, so we can call it directly
+        return self.fetch_order_book(symbol, limit)
 
-    async def fetch_trades(
+    def fetch_trades(
         self,
         symbol: str = "BTC/USDT",
         limit: int = 100,
@@ -156,7 +132,7 @@ class DataLoader:
             List of trade dictionaries
         """
         try:
-            trades = await self.connector.fetch_trades(symbol, limit=limit)
+            trades = self.connector.fetch_trades(symbol, limit=limit)
             return trades
         except Exception as e:
             print(f"Error fetching trades: {e}")

@@ -5,7 +5,6 @@ Fetch Historical Data Script
 Downloads historical market data from exchanges and saves to local cache.
 """
 
-import asyncio
 import argparse
 from pathlib import Path
 import pandas as pd
@@ -17,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from botclave.exchange.binance_connector import BinanceConnector, ExchangeConfig
 
 
-async def fetch_data(
+def fetch_data(
     symbol: str,
     timeframe: str,
     days: int,
@@ -41,31 +40,31 @@ async def fetch_data(
 
     since = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
 
-    all_data = []
+    all_dfs = []
     batch_size = 1000
 
     try:
         while True:
             print(f"Fetching batch from {datetime.fromtimestamp(since/1000)}...")
 
-            ohlcv = await connector.fetch_ohlcv(
+            # fetch_ohlcv now returns a DataFrame directly
+            df = connector.fetch_ohlcv(
                 symbol=symbol,
                 timeframe=timeframe,
                 limit=batch_size,
                 since=since,
             )
 
-            if not ohlcv:
+            if df.empty:
                 break
 
-            all_data.extend(ohlcv)
+            all_dfs.append(df)
 
-            if len(ohlcv) < batch_size:
+            if len(df) < batch_size:
                 break
 
-            since = ohlcv[-1][0] + 1
-
-            await asyncio.sleep(0.5)
+            # Get the last timestamp and increment for next batch
+            since = int(df.index[-1].timestamp() * 1000) + 1
 
     except Exception as e:
         print(f"Error fetching data: {e}")
@@ -74,17 +73,14 @@ async def fetch_data(
     finally:
         connector.close()
 
-    if not all_data:
+    if not all_dfs:
         print("No data fetched!")
         return
 
-    df = pd.DataFrame(
-        all_data,
-        columns=["timestamp", "open", "high", "low", "close", "volume"],
-    )
-
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df.set_index("timestamp", inplace=True)
+    # Concatenate all DataFrames
+    final_df = pd.concat(all_dfs)
+    final_df = final_df[~final_df.index.duplicated(keep='first')]
+    final_df.sort_index(inplace=True)
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -92,10 +88,10 @@ async def fetch_data(
     filename = f"{symbol.replace('/', '_')}_{timeframe}_{days}d.csv"
     filepath = output_path / filename
 
-    df.to_csv(filepath)
+    final_df.to_csv(filepath)
 
-    print(f"\n✅ Saved {len(df)} bars to {filepath}")
-    print(f"Date range: {df.index[0]} to {df.index[-1]}")
+    print(f"\n✅ Saved {len(final_df)} bars to {filepath}")
+    print(f"Date range: {final_df.index[0]} to {final_df.index[-1]}")
 
 
 def main():
@@ -133,14 +129,13 @@ def main():
 
     args = parser.parse_args()
 
-    asyncio.run(
-        fetch_data(
-            symbol=args.symbol,
-            timeframe=args.timeframe,
-            days=args.days,
-            output_dir=args.output,
-            testnet=not args.no_testnet,
-        )
+    # fetch_data is now synchronous
+    fetch_data(
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        days=args.days,
+        output_dir=args.output,
+        testnet=not args.no_testnet,
     )
 
 
