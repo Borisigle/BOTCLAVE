@@ -8,9 +8,13 @@ for real-time market data.
 from typing import Dict, List, Optional, Callable, Any
 import asyncio
 import json
+import logging
+import pandas as pd
 import ccxt
 from ccxt.base.errors import NetworkError, ExchangeError
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class ExchangeConfig(BaseModel):
@@ -73,38 +77,58 @@ class BinanceConnector:
         else:
             self.exchange = ccxt.binance(exchange_config)
 
-    async def fetch_ohlcv(
+    def fetch_ohlcv(
         self,
         symbol: str,
-        timeframe: str = "1m",
+        timeframe: str = "15m",
         limit: int = 100,
         since: Optional[int] = None,
-    ) -> List[List[float]]:
+    ) -> pd.DataFrame:
         """
-        Fetch OHLCV candlestick data.
+        Fetch OHLCV candlestick data from Binance.
 
         Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe string (1m, 5m, 15m, 1h, etc.)
-            limit: Number of candles to fetch
-            since: Starting timestamp
+            symbol: Trading pair (e.g., 'BTC/USDT')
+            timeframe: Candle timeframe (default '15m')
+            limit: Number of candles (default 100)
+            since: Starting timestamp (optional)
 
         Returns:
-            List of OHLCV data [timestamp, open, high, low, close, volume]
+            DataFrame with OHLCV columns indexed by timestamp
+
+        Raises:
+            RuntimeError: If exchange not initialized
+            NetworkError: If network error occurs
+            ExchangeError: If exchange error occurs
         """
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
 
         try:
-            ohlcv = await self.exchange.fetch_ohlcv(
-                symbol, timeframe, since, limit
-            )
-            return ohlcv
-        except (NetworkError, ExchangeError) as e:
-            print(f"Error fetching OHLCV: {e}")
-            return []
+            # CCXT fetch_ohlcv is synchronous, returns a list directly
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
 
-    async def fetch_order_book(
+            # Convert to DataFrame
+            df = pd.DataFrame(
+                ohlcv,
+                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            )
+
+            # Convert timestamp to datetime and set as index
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+
+            # Ensure numeric types
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            return df
+
+        except (NetworkError, ExchangeError) as e:
+            logger.error(f"Error fetching OHLCV for {symbol}: {str(e)}")
+            raise
+
+    def fetch_order_book(
         self, symbol: str, limit: int = 20
     ) -> Dict[str, Any]:
         """
@@ -116,18 +140,24 @@ class BinanceConnector:
 
         Returns:
             Order book dictionary with bids and asks
+
+        Raises:
+            RuntimeError: If exchange not initialized
+            NetworkError: If network error occurs
+            ExchangeError: If exchange error occurs
         """
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
 
         try:
-            order_book = await self.exchange.fetch_order_book(symbol, limit)
+            # CCXT fetch_order_book is synchronous
+            order_book = self.exchange.fetch_order_book(symbol, limit)
             return order_book
         except (NetworkError, ExchangeError) as e:
-            print(f"Error fetching order book: {e}")
-            return {"bids": [], "asks": [], "timestamp": 0}
+            logger.error(f"Error fetching order book for {symbol}: {str(e)}")
+            raise
 
-    async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
+    def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """
         Fetch current ticker data.
 
@@ -136,18 +166,24 @@ class BinanceConnector:
 
         Returns:
             Ticker dictionary
+
+        Raises:
+            RuntimeError: If exchange not initialized
+            NetworkError: If network error occurs
+            ExchangeError: If exchange error occurs
         """
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
 
         try:
-            ticker = await self.exchange.fetch_ticker(symbol)
+            # CCXT fetch_ticker is synchronous
+            ticker = self.exchange.fetch_ticker(symbol)
             return ticker
         except (NetworkError, ExchangeError) as e:
-            print(f"Error fetching ticker: {e}")
-            return {}
+            logger.error(f"Error fetching ticker for {symbol}: {str(e)}")
+            raise
 
-    async def fetch_trades(
+    def fetch_trades(
         self, symbol: str, limit: int = 100, since: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
@@ -160,33 +196,45 @@ class BinanceConnector:
 
         Returns:
             List of trade dictionaries
+
+        Raises:
+            RuntimeError: If exchange not initialized
+            NetworkError: If network error occurs
+            ExchangeError: If exchange error occurs
         """
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
 
         try:
-            trades = await self.exchange.fetch_trades(symbol, since, limit)
+            # CCXT fetch_trades is synchronous
+            trades = self.exchange.fetch_trades(symbol, since, limit)
             return trades
         except (NetworkError, ExchangeError) as e:
-            print(f"Error fetching trades: {e}")
-            return []
+            logger.error(f"Error fetching trades for {symbol}: {str(e)}")
+            raise
 
-    async def fetch_balance(self) -> Dict[str, Any]:
+    def fetch_balance(self) -> Dict[str, Any]:
         """
         Fetch account balance.
 
         Returns:
             Balance dictionary
+
+        Raises:
+            RuntimeError: If exchange not initialized
+            NetworkError: If network error occurs
+            ExchangeError: If exchange error occurs
         """
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
 
         try:
-            balance = await self.exchange.fetch_balance()
+            # CCXT fetch_balance is synchronous
+            balance = self.exchange.fetch_balance()
             return balance
         except (NetworkError, ExchangeError) as e:
-            print(f"Error fetching balance: {e}")
-            return {}
+            logger.error(f"Error fetching balance: {str(e)}")
+            raise
 
     async def subscribe_orderbook(
         self,
