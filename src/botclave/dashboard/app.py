@@ -301,9 +301,11 @@ def main():
             )
 
         with col3:
+            bos = smc_analysis.get("last_bos")
+            bias = bos.direction if bos else "neutral"
             st.info(
                 f"**Swings:** {len(smc_analysis.get('swings', []))}\n\n"
-                f"**Market Bias:** {smc_analysis.get('last_bos', {}).get('direction', 'NEUTRAL').upper()}"
+                f"**Market Bias:** {bias.upper()}"
             )
 
     # TAB 2: METRICS

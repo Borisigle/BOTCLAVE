@@ -141,11 +141,11 @@ def create_footprint_chart(
 
         for fp in footprints_tail:
             stats = fp.get_stats()
-            buy_volumes.append(stats.get("buy_volume", 0))
-            sell_volumes.append(stats.get("sell_volume", 0))
+            buy_volumes.append(stats.get("total_buy", 0))
+            sell_volumes.append(stats.get("total_sell", 0))
             total = stats.get("total_volume", 0)
             if total > 0:
-                imbalance = (stats.get("buy_volume", 0) - stats.get("sell_volume", 0)) / total
+                imbalance = (stats.get("total_buy", 0) - stats.get("total_sell", 0)) / total
             else:
                 imbalance = 0
             imbalances.append(imbalance)
