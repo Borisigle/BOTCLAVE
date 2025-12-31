@@ -197,14 +197,14 @@ class DataLoader:
     def calculate_orderflow_metrics(
         self,
         df: pd.DataFrame,
-        footprints: List[KlineFootprint],
+        footprints: Optional[List[KlineFootprint]] = None,
     ) -> dict:
         """
         Calculate orderflow metrics from data.
 
         Args:
             df: DataFrame with OHLCV data
-            footprints: List of footprint objects
+            footprints: Optional list of footprint objects
 
         Returns:
             Dictionary with orderflow metrics
@@ -213,26 +213,59 @@ class DataLoader:
             "cvd": 0.0,
             "buy_sell_ratio": 1.0,
             "delta": 0.0,
+            "total_buy_volume": 0,
+            "total_sell_volume": 0,
         }
 
-        if len(footprints) == 0:
-            return metrics
+        try:
+            # If no footprints provided, calculate from OHLCV volume as proxy
+            if not footprints or len(footprints) == 0:
+                if not df.empty and "volume" in df.columns:
+                    # Use volume as proxy (simplified approximation)
+                    buy_volumes = df["volume"] * 0.5
+                    sell_volumes = df["volume"] * 0.5
 
-        # Calculate CVD (Cumulative Volume Delta)
-        buy_volumes = [fp.buy_volume for fp in footprints]
-        sell_volumes = [fp.sell_volume for fp in footprints]
+                    delta = buy_volumes - sell_volumes
+                    cvd = delta.cumsum().iloc[-1] if len(delta) > 0 else 0.0
 
-        delta = pd.Series(buy_volumes) - pd.Series(sell_volumes)
-        cvd = delta.cumsum().iloc[-1] if len(delta) > 0 else 0.0
+                    total_buy = buy_volumes.sum()
+                    total_sell = sell_volumes.sum()
+                    ratio = total_buy / total_sell if total_sell > 0 else 1.0
 
-        # Buy/sell ratio
-        total_buy = sum(buy_volumes)
-        total_sell = sum(sell_volumes)
-        ratio = total_buy / total_sell if total_sell > 0 else 1.0
+                    metrics["cvd"] = float(cvd)
+                    metrics["buy_sell_ratio"] = float(ratio)
+                    metrics["delta"] = float(delta.iloc[-1]) if len(delta) > 0 else 0.0
+                    metrics["total_buy_volume"] = float(total_buy)
+                    metrics["total_sell_volume"] = float(total_sell)
+                return metrics
 
-        metrics["cvd"] = cvd
-        metrics["buy_sell_ratio"] = ratio
-        metrics["delta"] = delta.iloc[-1] if len(delta) > 0 else 0.0
+            # Calculate from footprints using get_stats()
+            buy_volumes = []
+            sell_volumes = []
+
+            for fp in footprints:
+                stats = fp.get_stats()
+                buy_volumes.append(stats.get("total_buy", 0))
+                sell_volumes.append(stats.get("total_sell", 0))
+
+            # Calculate CVD (Cumulative Volume Delta)
+            delta = pd.Series(buy_volumes) - pd.Series(sell_volumes)
+            cvd = delta.cumsum().iloc[-1] if len(delta) > 0 else 0.0
+
+            # Buy/sell ratio
+            total_buy = sum(buy_volumes)
+            total_sell = sum(sell_volumes)
+            ratio = total_buy / total_sell if total_sell > 0 else 1.0
+
+            metrics["cvd"] = float(cvd)
+            metrics["buy_sell_ratio"] = float(ratio)
+            metrics["delta"] = float(delta.iloc[-1]) if len(delta) > 0 else 0.0
+            metrics["total_buy_volume"] = float(total_buy)
+            metrics["total_sell_volume"] = float(total_sell)
+
+        except Exception as e:
+            print(f"Error calculating orderflow metrics: {e}")
+            # Return default metrics on error
 
         return metrics
 
